@@ -1,0 +1,225 @@
+---
+title: "SpamDataManipulation"
+author: "Tanish Visanagiri"
+date: "2025-04-29"
+output:
+  github_document:
+    toc: true
+    toc_depth: 3
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+required_pkgs <- c("tidyverse", "caret", "e1071", "randomForest", "pROC")
+installed     <- required_pkgs %in% rownames(installed.packages())
+if (any(!installed)) {
+  install.packages(required_pkgs[!installed])
+}
+
+invisible(lapply(required_pkgs, library, character.only = TRUE))
+```
+
+Unsolicited bulk e‑mail (commonly known as **spam**) clutters inboxes
+and wastes both user attention and server resources. A robust,
+data‑driven filter that automatically routes spam messages away from
+legitimate mail can dramatically improve user experience.
+
+This project develops and benchmarks several supervised learning models
+for binary spam classification using the classic **UCI Spambase** data
+set.
+
+*Research question.*\
+\> *How accurately can the attributes in the Spambase data predict \>
+whether an email is spam or not?* We evaluate accuracy, precision, \>
+recall, F<sub>1</sub> and AUC to answer this.
+
+-   **Data set:** Spambase (UCI Machine‑Learning Repository)\
+-   **Link:** <https://archive.ics.uci.edu/dataset/94/spambase>\
+-   **Observations:** 4,601 e‑mail messages\
+-   **Predictors:** 57 continuous attributes measuring word and
+    character frequencies plus statistics of capital‑letter runs\
+-   **Response:** `spam_label` (`Spam`=1, `Not_Spam`=0)
+
+> | Group | Variables | Description (examples) |
+> |------------------------------|------------------|------------------------|
+> | Word frequency | 48 | `% of words that are "make", "address", …` |
+> | Character frequency | 6 | `% of characters that are`"!"`,`"\$"`, …` |
+> | Capital‑letter run lengths | 3 | average, longest, total run |
+
+```{r load-data}
+# Path to Spambase flat file
+setwd("/Users/tanishv/Desktop")
+spam_file_path <- "spambase.data"
+
+# Column names
+col_names <- c(
+  paste0("word_freq_", 1:48),           # word frequencies
+  paste0("char_freq_", 1:6),            # character frequencies
+  "capital_run_length_average",
+  "capital_run_length_longest",
+  "capital_run_length_total",
+  "spam_label"
+)
+
+spam_data <- read.table(
+  file      = spam_file_path,
+  header    = FALSE,
+  sep       = ",",
+  col.names = col_names
+)
+
+# Convert target to factor
+spam_data$spam_label <- factor(spam_data$spam_label,
+                               levels = c(0, 1),
+                               labels = c("Not_Spam", "Spam"))
+
+# Remove exact duplicate rows (if any)
+spam_data <- distinct(spam_data)
+
+glimpse(spam_data)
+cat("Total observations:", nrow(spam_data), "\n")
+cat("Missing values:", sum(is.na(spam_data)), "\n")
+```
+
+```{r split}
+set.seed(2025)
+train_index <- createDataPartition(spam_data$spam_label, p = 0.8, list = FALSE)
+train_df <- spam_data[train_index, ]
+test_df  <- spam_data[-train_index, ]
+
+cat("Training set:", nrow(train_df), "observations\n")
+cat("Test set:", nrow(test_df), "observations\n")
+```
+
+```{r eda}
+# Class distribution
+train_df %>%
+  count(spam_label) %>%
+  mutate(prop = n / sum(n))
+```
+
+```{r eda-plots, fig.height=4}
+# Example: distribution of longest capital‑run
+train_df %>%
+  ggplot(aes(x = capital_run_length_longest, fill = spam_label)) +
+  geom_histogram(bins = 50, position = "identity", alpha = 0.5) +
+  labs(title = "Longest Capital Run by Class",
+       x = "Length", y = "Count") +
+  theme_minimal()
+```
+
+For this baseline study we keep the raw numeric predictors but apply the
+standard **center‑scale** preprocessing step. Future iterations could
+investigate:
+
+-   **Dimensionality reduction** (e.g., PCA, Independent Component
+    Analysis)
+-   **Feature selection** (recursive feature elimination, variance
+    thresholding)
+
+```{r preprocess}
+preproc <- preProcess(train_df[ , -ncol(train_df)], method = c("center", "scale"))
+train_x <- predict(preproc, train_df[ , -ncol(train_df)])
+train_y <- train_df$spam_label
+
+test_x  <- predict(preproc, test_df[ , -ncol(test_df)])
+```
+
+We benchmark three common algorithms:
+
+1.  **Logistic Regression** — interpretable baseline
+2.  **Random Forest** — nonlinear ensemble, handles high‑dimensional
+    data
+3.  **Support Vector Machine (Radial)** — strong classifier for
+    text‑like features
+
+```{r train-models}
+set.seed(2025)
+ctrl <- caret::trainControl(method = "cv", number = 5, classProbs = TRUE,
+                           summaryFunction = twoClassSummary,
+                           allowParallel = TRUE)
+
+logit_fit <- caret::train(train_x, train_y, method = "glm",
+                          family = "binomial", trControl = ctrl,
+                          metric = "ROC")
+
+rf_grid <- expand.grid(mtry = c(6, 12, 18),
+                       splitrule = "gini",
+                       min.node.size = 1)
+rf_fit <- caret::train(train_x, train_y,
+                       method = "ranger",
+                       num.trees = 300,
+                       tuneGrid  = rf_grid,
+                       importance = "impurity",
+                       trControl = ctrl,
+                       metric = "ROC")
+
+svm_grid <- expand.grid(
+  C     = 2 ^ c(-1, 0, 1),  # penalty parameter
+  sigma = 1 / ncol(train_x) # heuristic sigma
+)
+
+svm_fit <- caret::train(x = train_x, y = train_y,
+                        method = "svmRadial",
+                        tuneGrid = svm_grid,
+                        trControl = ctrl, metric = "ROC")
+```
+
+```{r evaluate}
+models <- list(Logistic = logit_fit, RandomForest = rf_fit, SVM = svm_fit)
+
+results <- resamples(models)
+summary(results)
+
+# Predict on hold‑out test set
+test_preds <- data.frame(
+  Logistic      = predict(logit_fit, test_x),
+  RandomForest  = predict(rf_fit,  test_x),
+  SVM           = predict(svm_fit,  test_x),
+  Truth         = test_df$spam_label
+)
+
+confusion <- function(pred, truth) {
+  confusionMatrix(pred, truth, positive = "Spam")$overall["Accuracy"]
+}
+
+acc <- map_dbl(names(models), ~ confusion(test_preds[[.x]], test_preds$Truth))
+print(acc)
+```
+
+```{r roc-curves, fig.height=4}
+# Plot ROC curves
+roc_logit <- roc(response = test_df$spam_label,
+                 predictor = predict(logit_fit, test_x, type = "prob")[, "Spam"])
+roc_rf    <- roc(test_df$spam_label, predict(rf_fit,  test_x, type = "prob")[, "Spam"])
+roc_svm   <- roc(test_df$spam_label, predict(svm_fit, test_x, type = "prob")[, "Spam"])
+
+plot(roc_logit, legacy.axes = TRUE, print.auc = TRUE)
+plot(roc_rf,    add = TRUE,  print.auc = TRUE, print.auc.y = 0.4)
+plot(roc_svm,   add = TRUE,  print.auc = TRUE, print.auc.y = 0.3)
+legend("bottomright", legend = c("Logistic", "Random Forest", "SVM"),
+       lty = c(1,1,1))
+```
+
+*Interpret results, highlight trade‑offs between interpretability and
+predictive power, potential overfitting, bias toward recall vs precision
+based on application needs.*
+
+The Random Forest achieved the best overall AUC and accuracy, suggesting
+that nonlinear interactions among word/character frequencies are
+important for detecting spam. Future improvements could explore
+specialized text representations (e.g., TF‑IDF vectors, word embeddings)
+and deep‑learning architectures such as LSTM networks.
+
+1.  **UCI Machine Learning Repository** – Spambase Data Set.\
+
+2.  W. B. Cavnar, J. M. Trenkle (1994). *N‑Gram‑Based Text
+    Categorization*.
+
+3.  ## [caret R package documentation](https://topepo.github.io/caret/index.html).
+
+\`\`\`{r session, echo=FALSE} sessionInfo()
