@@ -2,7 +2,10 @@
 title: "SpamDataManipulation"
 author: "Tanish Visanagiri"
 date: "2025-04-29"
-output: html_document
+output:
+  github_document:
+    toc: true
+    toc_depth: 3
 editor_options: 
   markdown: 
     wrap: 72
@@ -212,15 +215,11 @@ important for detecting spam. Future improvements could explore
 specialized text representations (e.g., TF‑IDF vectors, word embeddings)
 and deep‑learning architectures such as LSTM networks.
 
-# 10-References
-
 1.  **UCI Machine Learning Repository** – Spambase Data Set.\
 
 2.  W. B. Cavnar, J. M. Trenkle (1994). *N‑Gram‑Based Text
     Categorization*.
 
-3.  
-
-    ## [caret R package documentation](https://topepo.github.io/caret/index.html).
+3.  ## [caret R package documentation](https://topepo.github.io/caret/index.html).
 
 \`\`\`{r session, echo=FALSE} sessionInfo()
